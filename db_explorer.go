@@ -29,15 +29,24 @@ func NewDbExplorer(db *sql.DB) (*DbExplorer, error) {
 func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rows, err := exp.db.Query("SHOW DATABASES;")
-		defer rows.Close()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		// limit := r.FormValue("limit")
+		// fmt.Println(limit)
+		if r.URL.Path == "/" {
+			rows, err := exp.db.Query("SHOW DATABASES")
+			defer rows.Close()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			for rows.Next() {
+				var name string
+				rows.Scan(&name)
+				fmt.Println(name)
+			}
 		}
-		for rows.Next() {
-			var name string
-			rows.Scan(&name)
-			fmt.Println(name)
-		}
+	case "PUT":
+	case "POST":
+	case "DELETE":
+
 	}
+
 }
