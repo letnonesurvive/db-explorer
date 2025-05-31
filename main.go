@@ -15,11 +15,17 @@ var (
 	// вы можете изменить этот на тот который вам нужен
 	// docker run -p 3306:3306 -v $(PWD):/docker-entrypoint-initdb.d -e MYSQL_ROOT_PASSWORD=1234 -e MYSQL_DATABASE=golang -d mysql
 	// DSN = "root@tcp(localhost:3306)/golang2017?charset=utf8"
-	DSN = "root:1234@tcp(localhost:3306)/golang?charset=utf8"
+
+	// sudo docker exec -it vibrant_hypatia bash
+	// mysql -u root -p
+	DSN = "root:1234@tcp(localhost:3307)/golang?charset=utf8"
 )
 
 func main() {
 	db, err := sql.Open("mysql", DSN)
+	if err != nil {
+		panic(err)
+	}
 	err = db.Ping() // вот тут будет первое подключение к базе
 	if err != nil {
 		panic(err)
