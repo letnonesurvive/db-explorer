@@ -2,8 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -25,6 +27,20 @@ func NewDbExplorer(db *sql.DB) (*DbExplorer, error) {
 	exp.router.HandleFunc("/", exp.listFunc)
 
 	return exp, nil
+}
+
+func retrieveParam(paramStr string, defaultValue int) int {
+	var res int
+	if paramStr == "" {
+		res = defaultValue
+	} else {
+		var err error
+		res, err = strconv.Atoi(paramStr)
+		if err != nil {
+			res = defaultValue
+		}
+	}
+	return res
 }
 
 // лучше хранить в каком нибудь кэше или неумираемой переменной.
@@ -53,6 +69,35 @@ func getDatabases(db *sql.DB) (map[string]map[string]struct{}, error) {
 	return res, nil
 }
 
+func findDatabase(tableName string, db *sql.DB) (string, error) {
+	var databaseName string
+	databases, err := getDatabases(db)
+	if err != nil {
+		return databaseName, err
+	}
+	for database, tables := range databases {
+		if _, ok := tables[tableName]; ok {
+			databaseName = database
+			break
+		}
+	}
+	return databaseName, nil
+}
+
+func getPrimaryKeyName(db *sql.DB, databaseName, tableName string) (string, error) {
+	query := fmt.Sprintf("SELECT * FROM %s.%s LIMIT 1", databaseName, tableName)
+	rows, err := db.Query(query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+	return columns[0], nil
+}
+
 func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	segments := strings.Split(path, "/")
@@ -76,34 +121,22 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 			switch len(segments) {
 			case 1:
 				tableName := segments[0]
-				databases, err := getDatabases(exp.db)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				var isFoundTable bool
-				var databaseName string
-				for database, tables := range databases {
-					if _, ok := tables[tableName]; ok {
-						isFoundTable = true
-						databaseName = database
-						break
-					}
-				}
-				if !isFoundTable {
+				databaseName, err := findDatabase(tableName, exp.db)
+				if err != nil || len(databaseName) == 0 {
 					http.Error(w, "Not found such table", http.StatusNotFound)
 					return
 				}
-				//limit := r.FormValue("limit")
-				//offset := r.FormValue("offset")
-				query := fmt.Sprintf("SELECT * FROM %s.%s;", databaseName, tableName)
-				rows, err := exp.db.Query(query)
+				limit := retrieveParam(r.FormValue("limit"), 5)
+				offset := retrieveParam(r.FormValue("offset"), 0)
+
+				query := fmt.Sprintf("SELECT * FROM %s.%s LIMIT ? OFFSET ?", databaseName, tableName)
+				rows, err := exp.db.Query(query, limit, offset)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
 				defer rows.Close()
-
+				w.Header().Set("Content-type", "application/json")
 				columns, err := rows.Columns()
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -114,19 +147,71 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 					var tmp interface{}
 					values[i] = &tmp
 				}
+				//encoder.SetEscapeHTML(false) // Отключает \u0026
 				for rows.Next() {
 					rows.Scan(values...) // ожидает ровно столько аргументов, сколько колонок в таблице.
-					fmt.Println(values...)
-					for _, val := range values {
-						v := *(val.(*interface{})) // тоже какая то странная конструкция
-						fmt.Sprintf("%v\t", v)
+					data := make(map[string]interface{}, 0)
+					for i := 0; i < len(columns); i++ {
+						v := *(values[i].(*interface{}))
+						if b, ok := v.([]byte); ok {
+							data[columns[i]] = string(b)
+						} else {
+							data[columns[i]] = v
+						}
+					}
+					fmt.Println(data)
+					json.NewEncoder(w).Encode(data)
+				}
+			case 2:
+				tableName := segments[0]
+				id, err := strconv.Atoi(segments[1])
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				databaseName, err := findDatabase(tableName, exp.db)
+				if err != nil || len(databaseName) == 0 {
+					http.Error(w, "Not found such table", http.StatusNotFound)
+					return
+				}
+				primaryKey, err := getPrimaryKeyName(exp.db, databaseName, tableName)
+				if err != nil {
+					http.Error(w, "Not found primary key", http.StatusNotFound)
+					return
+				}
+				query := fmt.Sprintf("SELECT * FROM %s.%s WHERE ? = ? LIMIT 1;", databaseName, tableName)
+				rows, err := exp.db.Query(query, primaryKey, id)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				defer rows.Close()
+				w.Header().Set("Content-type", "application/json")
+				columns, err := rows.Columns()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				values := make([]interface{}, len(columns))
+				for i := range values { // написать объяснение что это
+					var tmp interface{}
+					values[i] = &tmp
+				}
+				//encoder.SetEscapeHTML(false) // Отключает \u0026
+				//for rows.Next() {
+				rows.Scan(values...) // ожидает ровно столько аргументов, сколько колонок в таблице.
+				data := make(map[string]interface{}, 0)
+				for i := 0; i < len(columns); i++ {
+					v := *(values[i].(*interface{}))
+					if b, ok := v.([]byte); ok {
+						data[columns[i]] = string(b)
+					} else {
+						data[columns[i]] = v
 					}
 				}
-				fmt.Println(values...)
-
-				// w.Write([]byte(entries))
-			case 2:
-				fmt.Println("попали в case 2")
+				fmt.Println(data)
+				json.NewEncoder(w).Encode(data)
+				//}
 			}
 		}
 	case "PUT":
