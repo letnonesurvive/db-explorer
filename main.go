@@ -13,10 +13,10 @@ import (
 var (
 	// DSN это соединение с базой
 	// вы можете изменить этот на тот который вам нужен
-	// docker run -p 3306:3306 -v $(PWD):/docker-entrypoint-initdb.d -e MYSQL_ROOT_PASSWORD=1234 -e MYSQL_DATABASE=golang -d mysql
+	// docker run -p 3307:3306 -v ${PWD}:/docker-entrypoint-initdb.d -e MYSQL_ROOT_PASSWORD=1234 -e MYSQL_DATABASE=golang -d mysql
 	// DSN = "root@tcp(localhost:3306)/golang2017?charset=utf8"
 
-	// sudo docker exec -it vibrant_hypatia bash
+	// sudo docker exec -it mystifying_edison bash
 	// mysql -u root -p
 	DSN = "root:1234@tcp(localhost:3307)/golang?charset=utf8"
 )

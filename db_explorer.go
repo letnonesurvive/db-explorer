@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -98,6 +99,41 @@ func getPrimaryKeyName(db *sql.DB, databaseName, tableName string) (string, erro
 	return columns[0], nil
 }
 
+func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {
+	res := make([]map[string]interface{}, 0)
+	columns, err := rows.Columns()
+	if err != nil {
+		//http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, err
+	}
+	values := make([]interface{}, len(columns))
+	for i := range values { // написать объяснение что это
+		var tmp interface{}
+		values[i] = &tmp
+	}
+	for rows.Next() {
+		err = rows.Scan(values...) // ожидает ровно столько аргументов, сколько колонок в таблице.
+		if err != nil {
+			//http.Error(w, err.Error(), http.StatusInternalServerError)
+			return nil, err
+		}
+		data := make(map[string]interface{}, 0)
+		for i := 0; i < len(columns); i++ {
+			v := *(values[i].(*interface{}))
+			if b, ok := v.([]byte); ok {
+				data[columns[i]] = string(b)
+			} else {
+				data[columns[i]] = v
+			}
+		}
+		res = append(res, data)
+	}
+	if len(res) == 0 {
+		return nil, errors.New("invalid ids") // лучше создать структуру ошибки и там хранить код ошибки и текст
+	}
+	return res, nil
+}
+
 func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	segments := strings.Split(path, "/")
@@ -105,18 +141,21 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		if r.URL.Path == "/" {
-			database, err := getDatabases(exp.db)
+			databases, err := getDatabases(exp.db)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			names := ""
-			for databaseName, tables := range database {
+			names := make([]string, 0)
+			for _, tables := range databases {
 				for table := range tables {
-					names += databaseName + " " + table + "\n"
+					names = append(names, table)
+					//names += databaseName + " " + table + "\n"
 				}
 			}
-			w.Write([]byte(names))
+			data := make(map[string][]string, 0)
+			data["tables"] = names
+			json.NewEncoder(w).Encode(data)
 		} else {
 			switch len(segments) {
 			case 1:
@@ -137,31 +176,12 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				}
 				defer rows.Close()
 				w.Header().Set("Content-type", "application/json")
-				columns, err := rows.Columns()
+				data, err := prepareResponceData(rows) // невалидный id нужно обработать
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				values := make([]interface{}, len(columns))
-				for i := range values { // написать объяснение что это
-					var tmp interface{}
-					values[i] = &tmp
-				}
-				//encoder.SetEscapeHTML(false) // Отключает \u0026
-				for rows.Next() {
-					rows.Scan(values...) // ожидает ровно столько аргументов, сколько колонок в таблице.
-					data := make(map[string]interface{}, 0)
-					for i := 0; i < len(columns); i++ {
-						v := *(values[i].(*interface{}))
-						if b, ok := v.([]byte); ok {
-							data[columns[i]] = string(b)
-						} else {
-							data[columns[i]] = v
-						}
-					}
-					fmt.Println(data)
-					json.NewEncoder(w).Encode(data)
-				}
+				json.NewEncoder(w).Encode(data)
 			case 2:
 				tableName := segments[0]
 				id, err := strconv.Atoi(segments[1])
@@ -179,44 +199,58 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "Not found primary key", http.StatusNotFound)
 					return
 				}
-				query := fmt.Sprintf("SELECT * FROM %s.%s WHERE ? = ? LIMIT 1;", databaseName, tableName)
-				rows, err := exp.db.Query(query, primaryKey, id)
+				query := fmt.Sprintf("SELECT * FROM %s.%s WHERE %s = ?;", databaseName, tableName, primaryKey)
+				rows, err := exp.db.Query(query, id)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
 				defer rows.Close()
 				w.Header().Set("Content-type", "application/json")
-				columns, err := rows.Columns()
+				data, err := prepareResponceData(rows) // невалидный id нужно обработать
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				values := make([]interface{}, len(columns))
-				for i := range values { // написать объяснение что это
-					var tmp interface{}
-					values[i] = &tmp
-				}
-				//encoder.SetEscapeHTML(false) // Отключает \u0026
-				//for rows.Next() {
-				rows.Scan(values...) // ожидает ровно столько аргументов, сколько колонок в таблице.
-				data := make(map[string]interface{}, 0)
-				for i := 0; i < len(columns); i++ {
-					v := *(values[i].(*interface{}))
-					if b, ok := v.([]byte); ok {
-						data[columns[i]] = string(b)
-					} else {
-						data[columns[i]] = v
-					}
-				}
-				fmt.Println(data)
-				json.NewEncoder(w).Encode(data)
-				//}
+				json.NewEncoder(w).Encode(data[0])
 			}
 		}
 	case "PUT":
 	case "POST":
 	case "DELETE":
+		switch len(segments) {
+		case 2:
+			tableName := segments[0]
+			id, err := strconv.Atoi(segments[1])
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			databaseName, err := findDatabase(tableName, exp.db)
+			if err != nil || len(databaseName) == 0 {
+				http.Error(w, "Not found such table", http.StatusNotFound)
+				return
+			}
+			primaryKey, err := getPrimaryKeyName(exp.db, databaseName, tableName)
+			if err != nil {
+				http.Error(w, "Not found primary key", http.StatusNotFound)
+				return
+			}
+			query := fmt.Sprintf("DELETE FROM %s.%s WHERE %s = ?;", databaseName, tableName, primaryKey)
+			result, err := exp.db.Exec(query, id)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			data := make(map[string]int64, 1)
+			data["deleted"] = affected
+			json.NewEncoder(w).Encode(data)
+		}
 	}
 
 }
