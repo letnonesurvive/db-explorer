@@ -44,6 +44,24 @@ func retrieveParam(paramStr string, defaultValue int) int {
 	return res
 }
 
+func getTables(db *sql.DB) (map[string][]string, error) {
+
+	rows, err := db.Query("SHOW TABLES")
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[string][]string)
+	defer rows.Close()
+	for rows.Next() {
+		var tableName string
+		rows.Scan(&tableName)
+		tables := res["tables"]
+		tables = append(tables, tableName)
+		res["tables"] = tables
+	}
+	return res, nil
+}
+
 // лучше хранить в каком нибудь кэше или неумираемой переменной.
 func getDatabases(db *sql.DB) (map[string]map[string]struct{}, error) {
 	// получить список таблиц из *всех баз данных*
@@ -85,7 +103,7 @@ func findDatabase(tableName string, db *sql.DB) (string, error) {
 	return databaseName, nil
 }
 
-func getPrimaryKeyName(db *sql.DB, databaseName, tableName string) (string, error) {
+func getPrimaryKey(db *sql.DB, databaseName, tableName string) (string, error) {
 	query := fmt.Sprintf("SELECT * FROM %s.%s LIMIT 1", databaseName, tableName)
 	rows, err := db.Query(query)
 	if err != nil {
@@ -141,20 +159,24 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		if r.URL.Path == "/" {
-			databases, err := getDatabases(exp.db)
+			// databases, err := getDatabases(exp.db)
+			// if err != nil {
+			// 	http.Error(w, err.Error(), http.StatusInternalServerError)
+			// 	return
+			// }
+			// names := make([]string, 0)
+			// for _, tables := range databases {
+			// 	for table := range tables {
+			// 		names = append(names, table)
+			// 	}
+			// }
+			// data := make(map[string][]string, 0)
+			// data["tables"] = names
+			data, err := getTables(exp.db)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			names := make([]string, 0)
-			for _, tables := range databases {
-				for table := range tables {
-					names = append(names, table)
-					//names += databaseName + " " + table + "\n"
-				}
-			}
-			data := make(map[string][]string, 0)
-			data["tables"] = names
 			json.NewEncoder(w).Encode(data)
 		} else {
 			switch len(segments) {
@@ -194,7 +216,7 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "Not found such table", http.StatusNotFound)
 					return
 				}
-				primaryKey, err := getPrimaryKeyName(exp.db, databaseName, tableName)
+				primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
 				if err != nil {
 					http.Error(w, "Not found primary key", http.StatusNotFound)
 					return
@@ -216,6 +238,57 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "PUT":
+		switch len(segments) {
+		case 1:
+			tableName := segments[0]
+			databaseName, err := findDatabase(tableName, exp.db)
+			if err != nil || len(databaseName) == 0 {
+				http.Error(w, "Not found such table", http.StatusNotFound)
+				return
+			}
+			body := make(map[string]interface{}, 0)
+			err = json.NewDecoder(r.Body).Decode(&body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			keys := make([]string, 0)
+			values := make([]interface{}, 0)
+			for key, val := range body {
+				keys = append(keys, key)
+				values = append(values, val)
+			}
+			questionMark := strings.Repeat("?, ", len(values)-1)
+			questionMark += "?"
+			query := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", databaseName, tableName, strings.Join(keys, ","), questionMark)
+			result, err := exp.db.Exec(query, values...)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			data := make(map[string]int64, 1)
+			primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
+			if err != nil {
+				http.Error(w, "Not found primary key", http.StatusNotFound)
+				return
+			}
+			id, err := result.LastInsertId()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if id == 0 { // not auto increment
+				var ok bool
+				var rawId float64
+				if rawId, ok = body[primaryKey].(float64); !ok {
+					http.Error(w, "Not found primary key", http.StatusNotFound)
+					return
+				}
+				id = int64(rawId)
+			}
+			data[primaryKey] = id
+			json.NewEncoder(w).Encode(data)
+		}
 	case "POST":
 	case "DELETE":
 		switch len(segments) {
@@ -231,7 +304,7 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Not found such table", http.StatusNotFound)
 				return
 			}
-			primaryKey, err := getPrimaryKeyName(exp.db, databaseName, tableName)
+			primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
 			if err != nil {
 				http.Error(w, "Not found primary key", http.StatusNotFound)
 				return
