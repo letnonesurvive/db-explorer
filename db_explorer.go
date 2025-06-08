@@ -338,6 +338,55 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 			SendResponse(w, data)
 		}
 	case "POST":
+		switch len(segments) {
+		case 2:
+			tableName := segments[0]
+			id, err := strconv.Atoi(segments[1])
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			databaseName, err := findDatabase(tableName, exp.db)
+			if err != nil || len(databaseName) == 0 {
+				http.Error(w, "Not found such table", http.StatusNotFound)
+				return
+			}
+			body := make(map[string]interface{}, 0)
+			err = json.NewDecoder(r.Body).Decode(&body)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+
+			primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
+			if err != nil {
+				http.Error(w, "Not found primary key", http.StatusNotFound)
+				return
+			}
+
+			keys := make([]string, 0)
+			values := make([]interface{}, 0)
+			for key, val := range body {
+				keys = append(keys, key)
+				values = append(values, val)
+			}
+			values = append(values, id)
+			setValue := ""
+			for i := 0; i < len(keys); i++ {
+				setValue += keys[i] + " = ?"
+				if i != len(keys)-1 {
+					setValue += ","
+				}
+			}
+			query := fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s = ?", databaseName, tableName, setValue, primaryKey)
+			_, err = exp.db.Exec(query, values...)
+			if err != nil {
+				HandleError(w, err)
+				return
+			}
+			data := make(map[string]int64, 1)
+			data["updated"] = 1
+			SendResponse(w, data)
+		}
 	case "DELETE":
 		switch len(segments) {
 		case 2:
@@ -370,7 +419,7 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 			}
 			data := make(map[string]int64, 1)
 			data["deleted"] = affected
-			json.NewEncoder(w).Encode(data)
+			SendResponse(w, data)
 		}
 	}
 
