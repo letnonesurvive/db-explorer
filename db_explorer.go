@@ -10,6 +10,19 @@ import (
 	"strings"
 )
 
+type DbError struct {
+	statusCode int
+	err        error
+}
+
+func (e DbError) Error() string {
+	return e.err.Error()
+}
+
+func (e DbError) Status() int {
+	return e.statusCode
+}
+
 // тут вы пишете код
 // обращаю ваше внимание - в этом задании запрещены глобальные переменные
 
@@ -90,15 +103,20 @@ func getDatabases(db *sql.DB) (map[string]map[string]struct{}, error) {
 
 func findDatabase(tableName string, db *sql.DB) (string, error) {
 	var databaseName string
+
 	databases, err := getDatabases(db)
 	if err != nil {
-		return databaseName, err
+		return "", err
 	}
 	for database, tables := range databases {
 		if _, ok := tables[tableName]; ok {
 			databaseName = database
 			break
 		}
+	}
+	if len(databaseName) == 0 {
+		err := DbError{err: errors.New("unknown table"), statusCode: http.StatusNotFound}
+		return "", err
 	}
 	return databaseName, nil
 }
@@ -117,11 +135,41 @@ func getPrimaryKey(db *sql.DB, databaseName, tableName string) (string, error) {
 	return columns[0], nil
 }
 
+func IsIdAutoIncrement(db *sql.DB, id string, databaseName, tableName string) bool {
+	query := "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND EXTRA LIKE ?"
+	row := db.QueryRow(query, databaseName, tableName, "%auto_increment%")
+	err := row.Err()
+	if err != nil || row == nil {
+		return false
+	}
+	var v string
+	row.Scan(&v)
+	return v == id
+}
+
+func HandleError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-type", "application/json")
+	if e, ok := err.(DbError); ok {
+		w.WriteHeader(e.statusCode)
+	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": err.Error(),
+	})
+}
+
+func SendResponse(w http.ResponseWriter, data any) {
+	response := make(map[string]interface{})
+	response["response"] = data
+	json.NewEncoder(w).Encode(response)
+}
+
 func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {
 	res := make([]map[string]interface{}, 0)
 	columns, err := rows.Columns()
 	if err != nil {
-		//http.Error(w, err.Error(), http.StatusInternalServerError)
 		return nil, err
 	}
 	values := make([]interface{}, len(columns))
@@ -132,7 +180,6 @@ func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {
 	for rows.Next() {
 		err = rows.Scan(values...) // ожидает ровно столько аргументов, сколько колонок в таблице.
 		if err != nil {
-			//http.Error(w, err.Error(), http.StatusInternalServerError)
 			return nil, err
 		}
 		data := make(map[string]interface{}, 0)
@@ -147,7 +194,8 @@ func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {
 		res = append(res, data)
 	}
 	if len(res) == 0 {
-		return nil, errors.New("invalid ids") // лучше создать структуру ошибки и там хранить код ошибки и текст
+		err := DbError{err: errors.New("record not found"), statusCode: http.StatusNotFound}
+		return nil, err
 	}
 	return res, nil
 }
@@ -159,32 +207,20 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		if r.URL.Path == "/" {
-			// databases, err := getDatabases(exp.db)
-			// if err != nil {
-			// 	http.Error(w, err.Error(), http.StatusInternalServerError)
-			// 	return
-			// }
-			// names := make([]string, 0)
-			// for _, tables := range databases {
-			// 	for table := range tables {
-			// 		names = append(names, table)
-			// 	}
-			// }
-			// data := make(map[string][]string, 0)
-			// data["tables"] = names
+			w.Header().Set("Content-type", "application/json")
 			data, err := getTables(exp.db)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			json.NewEncoder(w).Encode(data)
+			SendResponse(w, data)
 		} else {
 			switch len(segments) {
 			case 1:
 				tableName := segments[0]
 				databaseName, err := findDatabase(tableName, exp.db)
-				if err != nil || len(databaseName) == 0 {
-					http.Error(w, "Not found such table", http.StatusNotFound)
+				if err != nil {
+					HandleError(w, err)
 					return
 				}
 				limit := retrieveParam(r.FormValue("limit"), 5)
@@ -198,12 +234,14 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				}
 				defer rows.Close()
 				w.Header().Set("Content-type", "application/json")
-				data, err := prepareResponceData(rows) // невалидный id нужно обработать
+				records, err := prepareResponceData(rows) // невалидный id нужно обработать
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
+					HandleError(w, err)
 					return
 				}
-				json.NewEncoder(w).Encode(data)
+				data := make(map[string]interface{})
+				data["records"] = records
+				SendResponse(w, data)
 			case 2:
 				tableName := segments[0]
 				id, err := strconv.Atoi(segments[1])
@@ -224,17 +262,19 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				query := fmt.Sprintf("SELECT * FROM %s.%s WHERE %s = ?;", databaseName, tableName, primaryKey)
 				rows, err := exp.db.Query(query, id)
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
+					http.Error(w, err.Error(), http.StatusNotFound)
 					return
 				}
 				defer rows.Close()
 				w.Header().Set("Content-type", "application/json")
-				data, err := prepareResponceData(rows) // невалидный id нужно обработать
+				records, err := prepareResponceData(rows) // невалидный id нужно обработать
 				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
+					HandleError(w, err)
 					return
 				}
-				json.NewEncoder(w).Encode(data[0])
+				data := make(map[string]interface{})
+				data["record"] = records[0]
+				SendResponse(w, data)
 			}
 		}
 	case "PUT":
@@ -252,12 +292,24 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+
+			primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
+			if err != nil {
+				http.Error(w, "Not found primary key", http.StatusNotFound)
+				return
+			}
+			isKeyAutoIncrement := IsIdAutoIncrement(exp.db, primaryKey, databaseName, tableName)
+
 			keys := make([]string, 0)
 			values := make([]interface{}, 0)
 			for key, val := range body {
+				if isKeyAutoIncrement && key == primaryKey {
+					continue
+				}
 				keys = append(keys, key)
 				values = append(values, val)
 			}
+
 			questionMark := strings.Repeat("?, ", len(values)-1)
 			questionMark += "?"
 			query := fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", databaseName, tableName, strings.Join(keys, ","), questionMark)
@@ -266,12 +318,7 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			data := make(map[string]int64, 1)
-			primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
-			if err != nil {
-				http.Error(w, "Not found primary key", http.StatusNotFound)
-				return
-			}
+
 			id, err := result.LastInsertId()
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -286,8 +333,9 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 				}
 				id = int64(rawId)
 			}
+			data := make(map[string]int64, 1)
 			data[primaryKey] = id
-			json.NewEncoder(w).Encode(data)
+			SendResponse(w, data)
 		}
 	case "POST":
 	case "DELETE":

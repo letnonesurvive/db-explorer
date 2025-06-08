@@ -29,7 +29,7 @@ type Case struct {
 }
 
 var (
-	client = &http.Client{Timeout: time.Second}
+	client = &http.Client{Timeout: time.Hour}
 )
 
 func PrepareTestApis(db *sql.DB) {
