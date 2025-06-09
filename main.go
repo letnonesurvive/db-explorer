@@ -14,6 +14,7 @@ var (
 	// DSN это соединение с базой
 	// вы можете изменить этот на тот который вам нужен
 	// sudo docker run -p 3307:3306 --name db -v ${PWD}:/docker-entrypoint-initdb.d -e MYSQL_ROOT_PASSWORD=1234 -e MYSQL_DATABASE=golang -d mysql
+	// docker start db
 	// DSN = "root@tcp(localhost:3306)/golang2017?charset=utf8"
 
 	// sudo docker exec -it mystifying_edison bash
