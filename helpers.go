@@ -22,6 +22,15 @@ func (e DbError) Status() int {
 	return e.statusCode
 }
 
+func Contains[T comparable](slice []T, value T) bool {
+	for _, v := range slice {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
 func retrieveParam(paramStr string, defaultValue int) int {
 	var res int
 	if paramStr == "" {
@@ -137,6 +146,15 @@ func HandleError(w http.ResponseWriter, err error) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"error": err.Error(),
 	})
+}
+
+func IsRecordExist(db *sql.DB, databaseName, tableName, primaryKey string, id int) bool {
+	query := fmt.Sprintf("SELECT * FROM %s.%s WHERE %s = ?;", databaseName, tableName, primaryKey)
+	row := db.QueryRow(query, id)
+	if row != nil {
+		return true
+	}
+	return false
 }
 
 func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {

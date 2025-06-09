@@ -29,19 +29,27 @@ func NewDbExplorer(db *sql.DB) (*DbExplorer, error) {
 }
 
 func SendResponse(w http.ResponseWriter, data any) {
+	//w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-type", "application/json")
 	response := make(map[string]interface{})
 	response["response"] = data
 	json.NewEncoder(w).Encode(response)
 }
 
 func (exp *DbExplorer) AllTables(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-type", "application/json")
 	data, err := getTables(exp.db)
 	if err != nil {
 		HandleError(w, DbError{statusCode: http.StatusInternalServerError, err: err})
 		return
 	}
 	SendResponse(w, data)
+}
+
+func (exp *DbExplorer) printAllRecords(databaseName, tableName string) {
+	query := fmt.Sprintf("SELECT * FROM %s.%s;", databaseName, tableName)
+	rows, _ := exp.db.Query(query)
+	records, _ := prepareResponceData(rows)
+	fmt.Println(records)
 }
 
 func (exp *DbExplorer) List(w http.ResponseWriter, r *http.Request, tableName string) {
@@ -60,7 +68,6 @@ func (exp *DbExplorer) List(w http.ResponseWriter, r *http.Request, tableName st
 		return
 	}
 	defer rows.Close()
-	w.Header().Set("Content-type", "application/json")
 	records, err := prepareResponceData(rows) // невалидный id нужно обработать
 	if err != nil {
 		HandleError(w, err)
@@ -89,7 +96,6 @@ func (exp *DbExplorer) RecordById(w http.ResponseWriter, r *http.Request, tableN
 		return
 	}
 	defer rows.Close()
-	w.Header().Set("Content-type", "application/json")
 	records, err := prepareResponceData(rows) // невалидный id нужно обработать
 	if err != nil {
 		HandleError(w, err)
@@ -168,6 +174,7 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 	err = json.NewDecoder(r.Body).Decode(&body)
 	if err != nil {
 		HandleError(w, DbError{statusCode: http.StatusInternalServerError, err: err})
+		return
 	}
 
 	primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
@@ -190,12 +197,20 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 			setValue += ","
 		}
 	}
+
+	if Contains(keys, primaryKey) && IsRecordExist(exp.db, databaseName, tableName, primaryKey, id) {
+		HandleError(w, DbError{statusCode: http.StatusBadRequest, err: errors.New("field id have invalid type")})
+		return
+	}
+
 	query := fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s = ?", databaseName, tableName, setValue, primaryKey)
-	_, err = exp.db.Exec(query, values...)
+	result, err := exp.db.Exec(query, values...)
 	if err != nil {
 		HandleError(w, err)
 		return
 	}
+
+	fmt.Println(result.LastInsertId())
 	data := make(map[string]int64, 1)
 	data["updated"] = 1
 	SendResponse(w, data)
