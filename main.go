@@ -17,7 +17,7 @@ var (
 	// docker start db
 	// DSN = "root@tcp(localhost:3306)/golang2017?charset=utf8"
 
-	// sudo docker exec -it mystifying_edison bash
+	// sudo docker exec -it db bash
 	// mysql -u root -p
 	DSN = "root:1234@tcp(localhost:3307)/golang?charset=utf8"
 )

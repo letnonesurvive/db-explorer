@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 )
 
@@ -157,7 +158,7 @@ func IsRecordExist(db *sql.DB, databaseName, tableName, primaryKey string, id in
 	return false
 }
 
-func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {
+func Pack(rows *sql.Rows) ([]map[string]interface{}, error) {
 	res := make([]map[string]interface{}, 0)
 	columns, err := rows.Columns()
 	if err != nil {
@@ -189,4 +190,13 @@ func prepareResponceData(rows *sql.Rows) ([]map[string]interface{}, error) {
 		return nil, err
 	}
 	return res, nil
+}
+
+func toGoNativeType(Type string) reflect.Type {
+	if Type == "varchar" || Type == "text" {
+		return reflect.TypeOf("")
+	} else if Type == "int" {
+		return reflect.TypeOf(0)
+	}
+	return nil
 }

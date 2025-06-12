@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -48,8 +49,42 @@ func (exp *DbExplorer) AllTables(w http.ResponseWriter, r *http.Request) {
 func (exp *DbExplorer) printAllRecords(databaseName, tableName string) {
 	query := fmt.Sprintf("SELECT * FROM %s.%s;", databaseName, tableName)
 	rows, _ := exp.db.Query(query)
-	records, _ := prepareResponceData(rows)
+	records, _ := Pack(rows)
 	fmt.Println(records)
+}
+
+func (exp *DbExplorer) Validate(body map[string]interface{}, databaseName, tableName string) error {
+	query := "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?;"
+	rows, err := exp.db.Query(query, databaseName, tableName)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	type TypeInfo struct {
+		Type       reflect.Type
+		IsNullable bool
+	}
+
+	types := make(map[string]TypeInfo)
+	for rows.Next() {
+		var Field, Type string
+		var IsNullable string
+		if err := rows.Scan(&Field, &Type, &IsNullable); err != nil {
+			return err
+		}
+		types[Field] = TypeInfo{toGoNativeType(Type), IsNullable == "YES"}
+	}
+
+	for key, value := range body {
+		if (value == nil && types[key].IsNullable) || types[key].Type == reflect.TypeOf(value) {
+			continue
+		} else {
+			str := fmt.Sprintf("field %s have invalid type", key)
+			return DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
+		}
+	}
+	return nil
 }
 
 func (exp *DbExplorer) List(w http.ResponseWriter, r *http.Request, tableName string) {
@@ -68,7 +103,7 @@ func (exp *DbExplorer) List(w http.ResponseWriter, r *http.Request, tableName st
 		return
 	}
 	defer rows.Close()
-	records, err := prepareResponceData(rows) // невалидный id нужно обработать
+	records, err := Pack(rows) // невалидный id нужно обработать
 	if err != nil {
 		HandleError(w, err)
 		return
@@ -96,7 +131,7 @@ func (exp *DbExplorer) RecordById(w http.ResponseWriter, r *http.Request, tableN
 		return
 	}
 	defer rows.Close()
-	records, err := prepareResponceData(rows) // невалидный id нужно обработать
+	records, err := Pack(rows) // невалидный id нужно обработать
 	if err != nil {
 		HandleError(w, err)
 		return
@@ -176,6 +211,10 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, DbError{statusCode: http.StatusInternalServerError, err: err})
 		return
 	}
+	if err = exp.Validate(body, databaseName, tableName); err != nil {
+		HandleError(w, err)
+		return
+	}
 
 	primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
 	if err != nil {
@@ -209,6 +248,7 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, err)
 		return
 	}
+	exp.printAllRecords(databaseName, tableName)
 
 	fmt.Println(result.LastInsertId())
 	data := make(map[string]int64, 1)

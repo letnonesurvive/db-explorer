@@ -251,7 +251,7 @@ func TestApis(t *testing.T) {
 			},
 		},
 
-		// обновление null-поля в таблице
+		//обновление null-поля в таблице
 		Case{
 			Path:   "/items/3",
 			Method: http.MethodPost,
@@ -305,7 +305,7 @@ func TestApis(t *testing.T) {
 			},
 		},
 
-		// ошибки
+		//ошибки
 		Case{
 			Path:   "/items/3",
 			Method: http.MethodPost,
