@@ -3,12 +3,12 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"reflect"
 	"testing"
 
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -87,6 +87,9 @@ func CleanupTestApis(db *sql.DB) {
 
 func TestApis(t *testing.T) {
 	db, err := sql.Open("mysql", DSN)
+	if err != nil {
+		panic(err)
+	}
 	err = db.Ping()
 	if err != nil {
 		panic(err)
@@ -225,7 +228,7 @@ func TestApis(t *testing.T) {
 				},
 			},
 		},
-		Case{
+		Case{ // 9
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Body: CR{
@@ -306,7 +309,7 @@ func TestApis(t *testing.T) {
 		},
 
 		//ошибки
-		Case{
+		Case{ //16
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Status: http.StatusBadRequest,
@@ -317,7 +320,7 @@ func TestApis(t *testing.T) {
 				"error": "field id have invalid type",
 			},
 		},
-		Case{
+		Case{ //17
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Status: http.StatusBadRequest,
@@ -502,6 +505,9 @@ func TestApis(t *testing.T) {
 
 func runCases(t *testing.T, ts *httptest.Server, db *sql.DB, cases []Case) {
 	for idx, item := range cases {
+		if idx == 16 {
+			fmt.Println("stop")
+		}
 		var (
 			err      error
 			result   interface{}
@@ -518,14 +524,14 @@ func runCases(t *testing.T, ts *httptest.Server, db *sql.DB, cases []Case) {
 		}
 
 		if item.Method == "" || item.Method == http.MethodGet {
-			req, err = http.NewRequest(item.Method, ts.URL+item.Path+"?"+item.Query, nil)
+			req, _ = http.NewRequest(item.Method, ts.URL+item.Path+"?"+item.Query, nil)
 		} else {
 			data, err := json.Marshal(item.Body)
 			if err != nil {
 				panic(err)
 			}
 			reqBody := bytes.NewReader(data)
-			req, err = http.NewRequest(item.Method, ts.URL+item.Path, reqBody)
+			req, _ = http.NewRequest(item.Method, ts.URL+item.Path, reqBody)
 			req.Header.Add("Content-Type", "application/json")
 		}
 
@@ -535,7 +541,7 @@ func runCases(t *testing.T, ts *httptest.Server, db *sql.DB, cases []Case) {
 			continue
 		}
 		defer resp.Body.Close()
-		body, err := ioutil.ReadAll(resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 
 		// fmt.Printf("[%s] body: %s\n", caseName, string(body))
 		if item.Status == 0 {

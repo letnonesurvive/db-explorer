@@ -10,6 +10,8 @@ import (
 	"strconv"
 )
 
+var databases map[string]map[string]struct{}
+
 type DbError struct {
 	statusCode int
 	err        error
@@ -52,8 +54,8 @@ func getTables(db *sql.DB) (map[string][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	res := make(map[string][]string)
 	defer rows.Close()
+	res := make(map[string][]string)
 	for rows.Next() {
 		var tableName string
 		rows.Scan(&tableName)
@@ -66,28 +68,38 @@ func getTables(db *sql.DB) (map[string][]string, error) {
 
 // лучше хранить в каком нибудь кэше или неумираемой переменной.
 func getDatabases(db *sql.DB) (map[string]map[string]struct{}, error) {
-	// получить список таблиц из *всех баз данных*
-	rows, err := db.Query(
-		"SELECT TABLE_SCHEMA, TABLE_NAME " +
-			"FROM information_schema.tables " +
-			"WHERE TABLE_TYPE = 'BASE TABLE';")
 
-	if err != nil {
-		return nil, err
-	}
-	res := make(map[string]map[string]struct{}, 0)
-	defer rows.Close()
-	for rows.Next() {
-		var tableSchema, tableName string
-		rows.Scan(&tableSchema, &tableName)
-		tables := res[tableSchema]
-		if tables == nil {
-			tables = make(map[string]struct{})
+	if databases == nil {
+		// получить список таблиц из *всех баз данных*
+		rows, err := db.Query(
+			"SELECT TABLE_SCHEMA, TABLE_NAME " +
+				"FROM information_schema.tables " +
+				"WHERE TABLE_TYPE = 'BASE TABLE';")
+
+		if err != nil {
+			return nil, err
 		}
-		tables[tableName] = struct{}{}
-		res[tableSchema] = tables
+		defer rows.Close()
+		databases = make(map[string]map[string]struct{}, 0)
+		for rows.Next() {
+			var tableSchema, tableName string
+			err := rows.Scan(&tableSchema, &tableName)
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			tables := databases[tableSchema]
+			if tables == nil {
+				tables = make(map[string]struct{})
+			}
+			tables[tableName] = struct{}{}
+			databases[tableSchema] = tables
+		}
+		if err = rows.Err(); err != nil {
+			return databases, err
+		}
 	}
-	return res, nil
+	return databases, nil
 }
 
 func findDatabase(tableName string, db *sql.DB) (string, error) {
@@ -108,6 +120,7 @@ func findDatabase(tableName string, db *sql.DB) (string, error) {
 		return "", err
 	}
 	return databaseName, nil
+	//return "golang", nil
 }
 
 func getPrimaryKey(db *sql.DB, databaseName, tableName string) (string, error) {
@@ -122,6 +135,14 @@ func getPrimaryKey(db *sql.DB, databaseName, tableName string) (string, error) {
 		return "", err
 	}
 	return columns[0], nil
+}
+
+func isPrimaryKey(db *sql.DB, databaseName, tableName string, key string) bool {
+	primaryKey, err := getPrimaryKey(db, databaseName, tableName)
+	if err != nil || key != primaryKey {
+		return false
+	}
+	return true
 }
 
 func isIdAutoIncrement(db *sql.DB, id string, databaseName, tableName string) bool {
@@ -159,6 +180,7 @@ func IsRecordExist(db *sql.DB, databaseName, tableName, primaryKey string, id in
 }
 
 func Pack(rows *sql.Rows) ([]map[string]interface{}, error) {
+	defer rows.Close()
 	res := make([]map[string]interface{}, 0)
 	columns, err := rows.Columns()
 	if err != nil {
@@ -196,7 +218,7 @@ func toGoNativeType(Type string) reflect.Type {
 	if Type == "varchar" || Type == "text" {
 		return reflect.TypeOf("")
 	} else if Type == "int" {
-		return reflect.TypeOf(0)
+		return reflect.TypeOf(int64(0))
 	}
 	return nil
 }

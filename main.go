@@ -31,6 +31,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer db.Close()
 
 	handler, err := NewDbExplorer(db)
 	if err != nil {

@@ -49,6 +49,7 @@ func (exp *DbExplorer) AllTables(w http.ResponseWriter, r *http.Request) {
 func (exp *DbExplorer) printAllRecords(databaseName, tableName string) {
 	query := fmt.Sprintf("SELECT * FROM %s.%s;", databaseName, tableName)
 	rows, _ := exp.db.Query(query)
+	defer rows.Close()
 	records, _ := Pack(rows)
 	fmt.Println(records)
 }
@@ -66,7 +67,7 @@ func (exp *DbExplorer) Validate(body map[string]interface{}, databaseName, table
 		IsNullable bool
 	}
 
-	types := make(map[string]TypeInfo)
+	types := make(map[string]TypeInfo) // информация о типах взятая из БД
 	for rows.Next() {
 		var Field, Type string
 		var IsNullable string
@@ -76,8 +77,16 @@ func (exp *DbExplorer) Validate(body map[string]interface{}, databaseName, table
 		types[Field] = TypeInfo{toGoNativeType(Type), IsNullable == "YES"}
 	}
 
-	for key, value := range body {
-		if (value == nil && types[key].IsNullable) || types[key].Type == reflect.TypeOf(value) {
+	for key, value := range body { // информация пришедшая из запроса
+		aType, isUnknowField := types[key]
+		if !isUnknowField { // ignore field
+			continue
+		} else if isPrimaryKey(exp.db, databaseName, tableName, key) { // не можем менять primary key
+			str := fmt.Sprintf("field %s have invalid type", key)
+			return DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
+		} else if value == nil && aType.IsNullable { // nil value
+			continue
+		} else if aType.Type == reflect.TypeOf(value) {
 			continue
 		} else {
 			str := fmt.Sprintf("field %s have invalid type", key)
@@ -147,10 +156,10 @@ func (exp *DbExplorer) CreateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, DbError{statusCode: http.StatusNotFound, err: errors.New("not found such table")})
 		return
 	}
-	body := make(map[string]interface{}, 0)
-	err = json.NewDecoder(r.Body).Decode(&body)
+	body, err := jsonBodyParser(r.Body)
+	r.Body.Close()
 	if err != nil {
-		HandleError(w, DbError{statusCode: http.StatusInternalServerError, err: err})
+		HandleError(w, err)
 		return
 	}
 
@@ -160,6 +169,11 @@ func (exp *DbExplorer) CreateRecord(w http.ResponseWriter, r *http.Request, tabl
 		return
 	}
 	isKeyAutoIncrement := isIdAutoIncrement(exp.db, primaryKey, databaseName, tableName)
+
+	// if err = exp.Validate(body, databaseName, tableName); err != nil {
+	// 	HandleError(w, err)
+	// 	return
+	// }
 
 	keys := make([]string, 0)
 	values := make([]interface{}, 0)
@@ -205,12 +219,14 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, DbError{statusCode: http.StatusNotFound, err: errors.New("not found such table")})
 		return
 	}
-	body := make(map[string]interface{}, 0)
-	err = json.NewDecoder(r.Body).Decode(&body)
+
+	body, err := jsonBodyParser(r.Body)
+	r.Body.Close()
 	if err != nil {
-		HandleError(w, DbError{statusCode: http.StatusInternalServerError, err: err})
+		HandleError(w, err)
 		return
 	}
+
 	if err = exp.Validate(body, databaseName, tableName); err != nil {
 		HandleError(w, err)
 		return
@@ -248,7 +264,7 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, err)
 		return
 	}
-	exp.printAllRecords(databaseName, tableName)
+	//exp.printAllRecords(databaseName, tableName)
 
 	fmt.Println(result.LastInsertId())
 	data := make(map[string]int64, 1)
