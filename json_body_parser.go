@@ -17,7 +17,7 @@ func convertNumber(num json.Number) interface{} {
 
 func convertNumbers(src map[string]interface{}) map[string]interface{} {
 
-	res := make(map[string]interface{})
+	res := make(map[string]interface{}) // можно соптимизировать, приводить к типу in-place без создания новой мапы
 	for k, v := range src {
 		if num, ok := v.(json.Number); ok {
 			res[k] = convertNumber(num)

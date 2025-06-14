@@ -46,54 +46,57 @@ func (exp *DbExplorer) AllTables(w http.ResponseWriter, r *http.Request) {
 	SendResponse(w, data)
 }
 
-func (exp *DbExplorer) printAllRecords(databaseName, tableName string) {
-	query := fmt.Sprintf("SELECT * FROM %s.%s;", databaseName, tableName)
-	rows, _ := exp.db.Query(query)
-	defer rows.Close()
-	records, _ := Pack(rows)
-	fmt.Println(records)
-}
+func (exp *DbExplorer) Validate(body map[string]interface{}, databaseName, tableName string, method string) ([]string, []interface{}, error) {
 
-func (exp *DbExplorer) Validate(body map[string]interface{}, databaseName, tableName string) error {
-	query := "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?;"
-	rows, err := exp.db.Query(query, databaseName, tableName)
+	references, err := getReference(exp.db, databaseName, tableName)
 	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	type TypeInfo struct {
-		Type       reflect.Type
-		IsNullable bool
+		return nil, nil, err
 	}
 
-	types := make(map[string]TypeInfo) // информация о типах взятая из БД
-	for rows.Next() {
-		var Field, Type string
-		var IsNullable string
-		if err := rows.Scan(&Field, &Type, &IsNullable); err != nil {
-			return err
-		}
-		types[Field] = TypeInfo{toGoNativeType(Type), IsNullable == "YES"}
+	keys := make([]string, 0)
+	values := make([]interface{}, 0)
+
+	primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
+	if err != nil {
+		return nil, nil, DbError{statusCode: http.StatusNotFound, err: errors.New("not found primary key")}
 	}
 
 	for key, value := range body { // информация пришедшая из запроса
-		aType, isUnknowField := types[key]
-		if !isUnknowField { // ignore field
+		aType, isKnownField := references[key]
+		if !isKnownField { // ignore unknown field
 			continue
-		} else if isPrimaryKey(exp.db, databaseName, tableName, key) { // не можем менять primary key
+		}
+		if key == primaryKey && method == "POST" { // не можем менять primary key
 			str := fmt.Sprintf("field %s have invalid type", key)
-			return DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
-		} else if value == nil && aType.IsNullable { // nil value
+			return nil, nil, DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
+		} else if (method == "PUT") && (key == primaryKey) && isIdAutoIncrement(exp.db, primaryKey, databaseName, tableName) {
 			continue
-		} else if aType.Type == reflect.TypeOf(value) {
-			continue
+		} else if (value == nil && aType.IsNullable) || aType.Type == reflect.TypeOf(value) { // nil value
+			keys = append(keys, key)
+			values = append(values, value)
 		} else {
 			str := fmt.Sprintf("field %s have invalid type", key)
-			return DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
+			return nil, nil, DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
 		}
 	}
-	return nil
+
+	// for fieldName, aType := range references {
+	// 	value, exist := body[fieldName]
+	// 	if exist && (fieldName == primaryKey) && (method == "POST") { // не можем менять primary key
+	// 		str := fmt.Sprintf("field %s have invalid type", fieldName)
+	// 		return nil, nil, DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
+	// 	} else if (method == "PUT") && (fieldName == primaryKey) && isIdAutoIncrement(exp.db, primaryKey, databaseName, tableName) {
+	// 		continue
+	// 	} else if (value == nil && aType.IsNullable) || (aType.Type == reflect.TypeOf(value)) || !exist {
+	// 		keys = append(keys, fieldName)
+	// 		values = append(values, value)
+	// 	} else {
+	// 		str := fmt.Sprintf("field %s have invalid type", fieldName)
+	// 		return nil, nil, DbError{statusCode: http.StatusBadRequest, err: errors.New(str)}
+	// 	}
+	// }
+
+	return keys, values, nil
 }
 
 func (exp *DbExplorer) List(w http.ResponseWriter, r *http.Request, tableName string) {
@@ -168,21 +171,11 @@ func (exp *DbExplorer) CreateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, DbError{statusCode: http.StatusNotFound, err: errors.New("not found primary key")})
 		return
 	}
-	isKeyAutoIncrement := isIdAutoIncrement(exp.db, primaryKey, databaseName, tableName)
 
-	// if err = exp.Validate(body, databaseName, tableName); err != nil {
-	// 	HandleError(w, err)
-	// 	return
-	// }
-
-	keys := make([]string, 0)
-	values := make([]interface{}, 0)
-	for key, val := range body {
-		if isKeyAutoIncrement && key == primaryKey {
-			continue
-		}
-		keys = append(keys, key)
-		values = append(values, val)
+	keys, values, err := exp.Validate(body, databaseName, tableName, r.Method)
+	if err != nil {
+		HandleError(w, err)
+		return
 	}
 
 	questionMark := strings.Repeat("?, ", len(values)-1)
@@ -199,15 +192,7 @@ func (exp *DbExplorer) CreateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, DbError{statusCode: http.StatusInternalServerError, err: err})
 		return
 	}
-	if id == 0 { // not auto increment
-		var ok bool
-		var rawId float64
-		if rawId, ok = body[primaryKey].(float64); !ok {
-			HandleError(w, DbError{statusCode: http.StatusNotFound, err: errors.New("not found primary key")})
-			return
-		}
-		id = int64(rawId)
-	}
+
 	data := make(map[string]int64, 1)
 	data[primaryKey] = id
 	SendResponse(w, data)
@@ -221,13 +206,14 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 	}
 
 	body, err := jsonBodyParser(r.Body)
-	r.Body.Close()
+	r.Body.Close() // обязательно закрыть сразу, т.к повторой подключение к бд течет, хз почему
 	if err != nil {
 		HandleError(w, err)
 		return
 	}
 
-	if err = exp.Validate(body, databaseName, tableName); err != nil {
+	keys, values, err := exp.Validate(body, databaseName, tableName, r.Method)
+	if err != nil {
 		HandleError(w, err)
 		return
 	}
@@ -238,12 +224,6 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 		return
 	}
 
-	keys := make([]string, 0)
-	values := make([]interface{}, 0)
-	for key, val := range body {
-		keys = append(keys, key)
-		values = append(values, val)
-	}
 	values = append(values, id)
 	setValue := ""
 	for i := 0; i < len(keys); i++ {
@@ -264,7 +244,6 @@ func (exp *DbExplorer) UpdateRecord(w http.ResponseWriter, r *http.Request, tabl
 		HandleError(w, err)
 		return
 	}
-	//exp.printAllRecords(databaseName, tableName)
 
 	fmt.Println(result.LastInsertId())
 	data := make(map[string]int64, 1)
@@ -278,6 +257,9 @@ func (exp *DbExplorer) Delete(w http.ResponseWriter, r *http.Request, tableName 
 		HandleError(w, DbError{statusCode: http.StatusNotFound, err: errors.New("not found such table")})
 		return
 	}
+
+
+
 	primaryKey, err := getPrimaryKey(exp.db, databaseName, tableName)
 	if err != nil {
 		HandleError(w, DbError{statusCode: http.StatusNotFound, err: errors.New("not found primary key")})
@@ -364,7 +346,7 @@ func (exp *DbExplorer) listFunc(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(r.URL.Path, "/")
 	segments := strings.Split(path, "/")
 
-	// вариант использолвать  router map[string]func(http.ResponseWriter, *http.Request)
+	// вариант использовать  router map[string]func(http.ResponseWriter, *http.Request)
 	// и инициализировать маршруты по следующему виду exp.router["/items/{id}"] = exp.GetItemById
 	// затем каждый входящий url приводить к виду, который лежит в map
 	switch r.Method {

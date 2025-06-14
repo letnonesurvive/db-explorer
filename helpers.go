@@ -10,8 +10,6 @@ import (
 	"strconv"
 )
 
-var databases map[string]map[string]struct{}
-
 type DbError struct {
 	statusCode int
 	err        error
@@ -68,36 +66,34 @@ func getTables(db *sql.DB) (map[string][]string, error) {
 
 // лучше хранить в каком нибудь кэше или неумираемой переменной.
 func getDatabases(db *sql.DB) (map[string]map[string]struct{}, error) {
+	// получить список таблиц из *всех баз данных*
+	rows, err := db.Query(
+		"SELECT TABLE_SCHEMA, TABLE_NAME " +
+			"FROM information_schema.tables " +
+			"WHERE TABLE_TYPE = 'BASE TABLE'" +
+			"AND table_schema NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')")
 
-	if databases == nil {
-		// получить список таблиц из *всех баз данных*
-		rows, err := db.Query(
-			"SELECT TABLE_SCHEMA, TABLE_NAME " +
-				"FROM information_schema.tables " +
-				"WHERE TABLE_TYPE = 'BASE TABLE';")
-
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	databases := make(map[string]map[string]struct{}, 0)
+	for rows.Next() {
+		var tableSchema, tableName string
+		err := rows.Scan(&tableSchema, &tableName)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
-		defer rows.Close()
-		databases = make(map[string]map[string]struct{}, 0)
-		for rows.Next() {
-			var tableSchema, tableName string
-			err := rows.Scan(&tableSchema, &tableName)
-			if err != nil {
-				rows.Close()
-				return nil, err
-			}
-			tables := databases[tableSchema]
-			if tables == nil {
-				tables = make(map[string]struct{})
-			}
-			tables[tableName] = struct{}{}
-			databases[tableSchema] = tables
+		tables := databases[tableSchema]
+		if tables == nil {
+			tables = make(map[string]struct{})
 		}
-		if err = rows.Err(); err != nil {
-			return databases, err
-		}
+		tables[tableName] = struct{}{}
+		databases[tableSchema] = tables
+	}
+	if err = rows.Err(); err != nil {
+		return databases, err
 	}
 	return databases, nil
 }
@@ -145,6 +141,31 @@ func isPrimaryKey(db *sql.DB, databaseName, tableName string, key string) bool {
 	return true
 }
 
+type TypeInfo struct {
+	Type       reflect.Type
+	IsNullable bool
+}
+
+func getReference(db *sql.DB, databaseName, tableName string) (map[string]TypeInfo, error) {
+	query := "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?;"
+	rows, err := db.Query(query, databaseName, tableName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	types := make(map[string]TypeInfo) // информация о типах взятая из БД
+	for rows.Next() {
+		var Field, Type string
+		var IsNullable string
+		if err := rows.Scan(&Field, &Type, &IsNullable); err != nil {
+			return nil, err
+		}
+		types[Field] = TypeInfo{toGoNativeType(Type), IsNullable == "YES"}
+	}
+	return types, nil
+}
+
 func isIdAutoIncrement(db *sql.DB, id string, databaseName, tableName string) bool {
 	query := "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND EXTRA LIKE ?"
 	row := db.QueryRow(query, databaseName, tableName, "%auto_increment%")
@@ -170,8 +191,17 @@ func HandleError(w http.ResponseWriter, err error) {
 	})
 }
 
+func printAllRecords(db *sql.DB, databaseName, tableName string) {
+	query := fmt.Sprintf("SELECT * FROM %s.%s;", databaseName, tableName)
+	rows, _ := db.Query(query)
+	defer rows.Close()
+	records, _ := Pack(rows)
+	fmt.Println(records)
+}
+
 func IsRecordExist(db *sql.DB, databaseName, tableName, primaryKey string, id int) bool {
 	query := fmt.Sprintf("SELECT * FROM %s.%s WHERE %s = ?;", databaseName, tableName, primaryKey)
+
 	row := db.QueryRow(query, id)
 	if row != nil {
 		return true

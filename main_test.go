@@ -309,7 +309,7 @@ func TestApis(t *testing.T) {
 		},
 
 		//ошибки
-		Case{ //16
+		Case{ //15
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Status: http.StatusBadRequest,
@@ -320,7 +320,7 @@ func TestApis(t *testing.T) {
 				"error": "field id have invalid type",
 			},
 		},
-		Case{ //17
+		Case{ //16
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Status: http.StatusBadRequest,
@@ -331,7 +331,7 @@ func TestApis(t *testing.T) {
 				"error": "field title have invalid type",
 			},
 		},
-		Case{
+		Case{ // 17
 			Path:   "/items/3",
 			Method: http.MethodPost,
 			Status: http.StatusBadRequest,
@@ -383,7 +383,7 @@ func TestApis(t *testing.T) {
 		},
 
 		// и немного по другой таблице
-		Case{
+		Case{ // 22
 			Path: "/users/1",
 			Result: CR{
 				"response": CR{
@@ -447,6 +447,8 @@ func TestApis(t *testing.T) {
 				"user_id":    2,
 				"login":      "qwerty'",
 				"password":   "love\"",
+				"email":      "", // должно работать также как, если пустые поля не указывать.
+				"info":       "", //
 				"unkn_field": "love",
 			},
 			Result: CR{
@@ -505,9 +507,9 @@ func TestApis(t *testing.T) {
 
 func runCases(t *testing.T, ts *httptest.Server, db *sql.DB, cases []Case) {
 	for idx, item := range cases {
-		if idx == 16 {
-			fmt.Println("stop")
-		}
+		// if idx == 9 {
+		// 	fmt.Println("stop")
+		// }
 		var (
 			err      error
 			result   interface{}
